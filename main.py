@@ -19,10 +19,20 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
+origins = [
+    "http://localhost:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8000",
+    "https://bancometropolitan.com.br",       # Seu domínio oficial
+    "https://www.bancometropolitan.com.br",   # Seu domínio com www
+    "http://bancometropolitan.com.br",        # Versão http (por precaução)
+    "http://www.bancometropolitan.com.br",
+    "https://painel.bancometropolitan.com.br",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
