@@ -14,7 +14,8 @@ async def resumo_geral():
             COUNT(DISTINCT ct.id)          AS total_contratos,
             SUM(ct.valor_enviado)          AS capital_total_emprestado,
             SUM(ct.montante)               AS montante_total_carteira,
-            SUM(ct.valor_parcela)          AS receita_mensal_esperada
+            COALESCE(SUM(ct.valor_parcela), 0)     AS receita_mensal_esperada,
+            COALESCE(SUM(ct.spread_total), 0)      AS spread_total_carteira
         FROM clientes c
         JOIN contratos ct ON ct.cliente_id = c.id
         WHERE c.ativo = TRUE AND ct.ativo = TRUE
@@ -76,4 +77,26 @@ async def vencimentos_proximos(dias: int = 7):
           AND p.data_vencimento BETWEEN CURRENT_DATE AND CURRENT_DATE + $1::int
         ORDER BY p.data_vencimento, c.nome
     """, dias)
+    return [dict(r) for r in rows]
+
+
+@router.get("/evolucao-mensal")
+async def evolucao_mensal(ano: int = None):
+    pool = get_pool()
+    
+    # O filtro utiliza EXTRACT(YEAR...) para filtrar as parcelas do ano escolhido
+    query = """
+        SELECT 
+            p.mes_referencia AS mes,
+            COALESCE(SUM(p.valor), 0) AS montante_mensal,
+            COALESCE(SUM(ct.spread_total / ct.num_parcelas), 0) AS spread_mensal,
+            COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS inadimplencia_mensal
+        FROM parcelas p
+        JOIN contratos ct ON ct.id = p.contrato_id
+        WHERE ($1::int IS NULL OR EXTRACT(YEAR FROM p.data_vencimento) = $1)
+        GROUP BY p.mes_referencia
+        ORDER BY p.mes_referencia ASC
+    """
+    
+    rows = await pool.fetch(query, ano)
     return [dict(r) for r in rows]
