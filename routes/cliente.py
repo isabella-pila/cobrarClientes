@@ -17,7 +17,7 @@ router = APIRouter()
 @router.get("/", response_model=List[ClienteOut])
 async def listar_clientes(
     modalidade: Optional[str] = None,
-    ativo: Optional[bool] = True,
+    ativo: Optional[bool] = None,
     search: Optional[str] = None,
 ):
     pool = get_pool()
