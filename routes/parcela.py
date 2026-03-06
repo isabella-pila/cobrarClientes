@@ -45,19 +45,25 @@ async def parcelas_mes_atual():
 @router.get("/atrasadas")
 async def parcelas_atrasadas():
     pool = get_pool()
+    # Alteramos o ORDER BY para priorizar quem está devendo há mais tempo
     rows = await pool.fetch("""
-        SELECT c.id AS cliente_id, c.nome, c.modalidade, c.telefone,
-               COUNT(p.id) AS qtd_parcelas, SUM(p.valor) AS total_devido,
-               MIN(p.data_vencimento) AS primeira_parcela_em_atraso
+        SELECT 
+            c.id AS cliente_id, 
+            c.nome, 
+            c.modalidade, 
+            c.telefone,
+            COUNT(p.id) AS qtd_parcelas, 
+            SUM(p.valor) AS total_devido,
+            MIN(p.data_vencimento) AS primeira_parcela_em_atraso
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id
         JOIN clientes c ON c.id = ct.cliente_id
         WHERE p.status = 'atrasado'
+           OR (p.status = 'pendente' AND p.data_vencimento < CURRENT_DATE)
         GROUP BY c.id, c.nome, c.modalidade, c.telefone
-        ORDER BY total_devido DESC
+        ORDER BY primeira_parcela_em_atraso ASC, total_devido DESC
     """)
     return [dict(r) for r in rows]
-
 
 @router.get("/{parcela_id}")
 async def buscar_parcela(parcela_id: int):

@@ -89,7 +89,7 @@ async def evolucao_mensal(ano: int = None):
         SELECT 
             p.mes_referencia AS mes,
             COALESCE(SUM(p.valor), 0) AS montante_mensal,
-            COALESCE(SUM(ct.spread_total / ct.num_parcelas), 0) AS spread_mensal,
+            COALESCE(SUM(spread_por_parcela), 0) AS spread_mensal,
             COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS inadimplencia_mensal
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id
