@@ -5,7 +5,7 @@ from schemas import ContratoCreate, ContratoUpdate, ContratoOut
 
 router = APIRouter()
 
-
+# contrato.py: rota para gerenciar contratos (CRUD + listagem de parcelas)
 @router.get("/", response_model=List[ContratoOut])
 async def listar_contratos(ativo: Optional[bool] = True):
     pool = get_pool()

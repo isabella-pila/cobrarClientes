@@ -10,19 +10,13 @@ from schemas import ClienteCreate, ContratoCreate
 
 router = APIRouter()
 
-
-# ─────────────── Schema de entrada unificado ───────────────
-
 class OnboardingIn(BaseModel):
-    # Dados do cliente
     nome: str
     modalidade: str
     dia_vencimento: int
     telefone: Optional[str] = None
     email: Optional[str] = None
     cpf_cnpj: Optional[str] = None
-
-    # Dados do contrato
     valor_enviado: Decimal
     montante: Decimal
     spread_total: Optional[Decimal] = None
@@ -30,19 +24,13 @@ class OnboardingIn(BaseModel):
     taxa_mensal: Optional[Decimal] = None
     valor_parcela: Decimal
     spread_por_parcela: Optional[Decimal] = None
-    data_inicio: Optional[date] = None  # default = hoje
+    data_inicio: Optional[date] = None
 
-
-# ─────────────── Rota POST /onboarding ───────────────
 
 @router.post("/", status_code=201)
 async def onboarding(payload: OnboardingIn):
-    """
-    Cadastra cliente + contrato e já gera todas as parcelas em uma única chamada.
-    """
     pool = get_pool()
 
-    # Validações antecipadas
     if not (1 <= payload.dia_vencimento <= 28):
         raise HTTPException(400, "dia_vencimento deve estar entre 1 e 28")
     if payload.num_parcelas < 1:
@@ -52,6 +40,10 @@ async def onboarding(payload: OnboardingIn):
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+
+            await conn.execute("SELECT setval(pg_get_serial_sequence('clientes', 'id'), coalesce(max(id), 0) + 1, false) FROM clientes;")
+            await conn.execute("SELECT setval(pg_get_serial_sequence('contratos', 'id'), coalesce(max(id), 0) + 1, false) FROM contratos;")
+            await conn.execute("SELECT setval(pg_get_serial_sequence('parcelas', 'id'), coalesce(max(id), 0) + 1, false) FROM parcelas;")
 
             # 1. Cria o cliente
             cliente = await conn.fetchrow(
@@ -89,13 +81,16 @@ async def onboarding(payload: OnboardingIn):
             )
 
             # 3. Gera as parcelas
+            # Lógica: cliente paga no mês anterior ao de referência
+            # Ex: vence em 10/09 → referência 2025-10 (pagou adiantado para outubro)
             parcelas = []
             for i in range(payload.num_parcelas):
-                # Avança mês a mês a partir da data de início,
-                # fixando o dia de vencimento do cliente
                 vencimento_base = data_inicio + relativedelta(months=i + 1)
                 data_vencimento = vencimento_base.replace(day=payload.dia_vencimento)
-                mes_referencia = data_vencimento.strftime("%Y-%m")
+
+                # Referência é sempre 1 mês à frente do vencimento
+                mes_ref_date = data_vencimento - relativedelta(months=1)
+                mes_referencia = mes_ref_date.strftime("%Y-%m")
 
                 parcela = await conn.fetchrow(
                     """

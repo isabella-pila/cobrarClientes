@@ -84,12 +84,15 @@ async def vencimentos_proximos(dias: int = 7):
 async def evolucao_mensal(ano: int = None):
     pool = get_pool()
     
-    # O filtro utiliza EXTRACT(YEAR...) para filtrar as parcelas do ano escolhido
     query = """
         SELECT 
             p.mes_referencia AS mes,
             COALESCE(SUM(p.valor), 0) AS montante_mensal,
-            COALESCE(SUM(spread_por_parcela), 0) AS spread_mensal,
+            -- Soma o valor enviado apenas quando for a parcela número 1
+            COALESCE(SUM(
+                CASE WHEN p.numero_parcela = 1 THEN ct.valor_enviado ELSE 0 END
+            ), 0) AS valor_enviado_mensal,
+            COALESCE(SUM(ct.spread_por_parcela), 0) AS spread_mensal,
             COALESCE(SUM(p.valor) FILTER (WHERE p.status = 'atrasado'), 0) AS inadimplencia_mensal
         FROM parcelas p
         JOIN contratos ct ON ct.id = p.contrato_id

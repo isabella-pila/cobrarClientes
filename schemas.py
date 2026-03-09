@@ -112,3 +112,7 @@ class ParcelaOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+
+        

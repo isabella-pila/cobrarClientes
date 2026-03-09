@@ -6,7 +6,7 @@ from schemas import PagamentoIn, ParcelaUpdate
 
 router = APIRouter()
 
-
+# parcela 
 @router.get("/")
 async def listar_parcelas(
     status: Optional[str] = None,
