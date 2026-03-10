@@ -62,6 +62,7 @@ class ContratoUpdate(BaseModel):
     valor_parcela: Optional[Decimal] = None
     spread_por_parcela: Optional[Decimal] = None
     ativo: Optional[bool] = None
+    data_inicio: Optional[date]    = None
 
 
 class ContratoOut(BaseModel):

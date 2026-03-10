@@ -74,6 +74,7 @@ async def criar_cliente(payload: ClienteCreate):
             detail="Erro de integridade: CPF/CNPJ ou ID já cadastrado."
         )
 
+
 @router.patch("/{cliente_id}", response_model=ClienteOut)
 async def atualizar_cliente(cliente_id: int, payload: ClienteUpdate):
     pool = get_pool()
@@ -93,14 +94,39 @@ async def atualizar_cliente(cliente_id: int, payload: ClienteUpdate):
     return dict(row)
 
 
-@router.delete("/{cliente_id}", status_code=204)
-async def desativar_cliente(cliente_id: int):
+# ── DELETE real: remove cliente + contratos + parcelas em cascata ──
+@router.delete("/{cliente_id}", status_code=200)
+async def excluir_cliente(cliente_id: int):
     pool = get_pool()
-    result = await pool.execute(
-        "UPDATE clientes SET ativo = FALSE WHERE id = $1", cliente_id
-    )
-    if result == "UPDATE 0":
-        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+
+            existe = await conn.fetchval(
+                "SELECT id FROM clientes WHERE id = $1", cliente_id
+            )
+            if not existe:
+                raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+            # Ordem importa por causa das foreign keys: parcelas → contratos → clientes
+            await conn.execute(
+                """
+                DELETE FROM parcelas
+                WHERE contrato_id IN (
+                    SELECT id FROM contratos WHERE cliente_id = $1
+                )
+                """,
+                cliente_id,
+            )
+            await conn.execute(
+                "DELETE FROM contratos WHERE cliente_id = $1",
+                cliente_id,
+            )
+            await conn.execute(
+                "DELETE FROM clientes WHERE id = $1",
+                cliente_id,
+            )
+
+    return {"mensagem": f"Cliente {cliente_id} e todos os seus dados foram excluídos permanentemente."}
 
 
 @router.get("/{cliente_id}/contratos")
@@ -207,14 +233,11 @@ async def onboarding(payload: OnboardingIn):
             )
 
             # 3. Gera as parcelas
-            # Lógica: cliente paga no mês anterior ao de referência
-            # Ex: vence em 10/09 → referência 2025-10 (pagou adiantado para outubro)
             parcelas = []
             for i in range(payload.num_parcelas):
                 vencimento_base = data_inicio + relativedelta(months=i + 1)
                 data_vencimento = vencimento_base.replace(day=payload.dia_vencimento)
 
-                # Referência é sempre 1 mês à frente do vencimento
                 mes_ref_date = data_vencimento - relativedelta(months=1)
                 mes_referencia = mes_ref_date.strftime("%Y-%m")
 

@@ -2,10 +2,12 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from database import get_pool
 from schemas import ContratoCreate, ContratoUpdate, ContratoOut
+from datetime import date
+from dateutil.relativedelta import relativedelta
 
 router = APIRouter()
 
-# contrato.py: rota para gerenciar contratos (CRUD + listagem de parcelas)
+
 @router.get("/", response_model=List[ContratoOut])
 async def listar_contratos(ativo: Optional[bool] = True):
     pool = get_pool()
@@ -27,7 +29,6 @@ async def buscar_contrato(contrato_id: int):
 @router.post("/", response_model=ContratoOut, status_code=201)
 async def criar_contrato(payload: ContratoCreate):
     pool = get_pool()
-    # Verifica se cliente existe
     cliente = await pool.fetchrow(
         "SELECT id FROM clientes WHERE id = $1", payload.cliente_id
     )
@@ -55,23 +56,128 @@ async def criar_contrato(payload: ContratoCreate):
     return dict(row)
 
 
-@router.patch("/{contrato_id}", response_model=ContratoOut)
+@router.patch("/{contrato_id}")
 async def atualizar_contrato(contrato_id: int, payload: ContratoUpdate):
     pool = get_pool()
     data = payload.model_dump(exclude_none=True)
     if not data:
         raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
 
-    sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(data.keys()))
-    values = list(data.values())
-    row = await pool.fetchrow(
-        f"UPDATE contratos SET {sets} WHERE id = $1 RETURNING *",
-        contrato_id,
-        *values,
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Contrato não encontrado")
-    return dict(row)
+    # Qualquer um desses campos dispara regeneração das parcelas
+    CAMPOS_QUE_REGENERAM = {"valor_parcela", "num_parcelas", "data_inicio", "spread_por_parcela"}
+    deve_regenerar = bool(CAMPOS_QUE_REGENERAM & set(data.keys()))
+
+    parcelas_criadas = 0
+    numeros_pagos: set = set()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+
+            # ── 1. Atualiza o contrato ─────────────────────────────────
+            sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(data.keys()))
+            await conn.execute(
+                f"UPDATE contratos SET {sets} WHERE id = $1",
+                contrato_id, *list(data.values())
+            )
+
+            # ── 2. Busca contrato atualizado completo ──────────────────
+            contrato = await conn.fetchrow(
+                "SELECT * FROM contratos WHERE id = $1", contrato_id
+            )
+            if not contrato:
+                raise HTTPException(status_code=404, detail="Contrato não encontrado")
+
+            # ── 3. Busca dia_vencimento do cliente ─────────────────────
+            cliente = await conn.fetchrow(
+                "SELECT dia_vencimento FROM clientes WHERE id = $1",
+                contrato["cliente_id"]
+            )
+            if not cliente:
+                raise HTTPException(status_code=404, detail="Cliente não encontrado")
+            dia_vencimento = cliente["dia_vencimento"]
+
+            # ── 4. Regenera parcelas se necessário ─────────────────────
+            if deve_regenerar:
+
+                # Parcelas já pagas — preservadas intactas
+                pagas = await conn.fetch(
+                    """
+                    SELECT numero_parcela FROM parcelas
+                    WHERE contrato_id = $1 AND status = 'pago'
+                    ORDER BY numero_parcela
+                    """,
+                    contrato_id
+                )
+                numeros_pagos = {r["numero_parcela"] for r in pagas}
+
+                # Deleta somente pendentes e atrasadas
+                await conn.execute(
+                    "DELETE FROM parcelas WHERE contrato_id = $1 AND status != 'pago'",
+                    contrato_id
+                )
+
+                # Valores atualizados do contrato
+                num_parcelas       = contrato["num_parcelas"]
+                valor_parcela      = contrato["valor_parcela"]
+                spread_por_parcela = contrato["spread_por_parcela"]
+
+                # data_inicio: usa a do contrato ou hoje como fallback
+                data_inicio = contrato["data_inicio"] or date.today()
+                # asyncpg pode retornar datetime — garante date
+                if hasattr(data_inicio, "date"):
+                    data_inicio = data_inicio.date()
+
+                for i in range(num_parcelas):
+                    numero = i + 1
+
+                    # Pula parcelas já pagas
+                    if numero in numeros_pagos:
+                        continue
+
+                    # Data de vencimento: data_inicio + i meses, no dia de vencimento
+                    vencimento_base = data_inicio + relativedelta(months=i)
+                    data_vencimento = vencimento_base.replace(day=dia_vencimento)
+
+                    # mes_referencia = mês SEGUINTE ao vencimento
+                    mes_ref_date   = data_vencimento + relativedelta(months=1)
+                    mes_referencia = mes_ref_date.strftime("%Y-%m")
+
+                    status = "atrasado" if data_vencimento < date.today() else "pendente"
+
+                    await conn.execute(
+                        """
+                        INSERT INTO parcelas
+                            (contrato_id, numero_parcela, total_parcelas,
+                             mes_referencia, data_vencimento, valor, status)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        contrato_id,
+                        numero,
+                        num_parcelas,
+                        mes_referencia,
+                        data_vencimento,
+                        valor_parcela,
+                        status,
+                    )
+                    parcelas_criadas += 1
+
+                # Atualiza total_parcelas nas parcelas pagas se num_parcelas mudou
+                if "num_parcelas" in data and numeros_pagos:
+                    await conn.execute(
+                        """
+                        UPDATE parcelas
+                        SET total_parcelas = $1
+                        WHERE contrato_id = $2 AND status = 'pago'
+                        """,
+                        num_parcelas, contrato_id
+                    )
+
+    return {
+        "mensagem": "Contrato atualizado com sucesso!",
+        "parcelas_regeneradas": parcelas_criadas,
+        "parcelas_pagas_preservadas": len(numeros_pagos),
+        "deve_regenerar": deve_regenerar,
+    }
 
 
 @router.delete("/{contrato_id}", status_code=204)
